@@ -1,18 +1,18 @@
 # chatbot.py
 # Author: Pamela Emmrich
 
-HANDOFF_WORDS = ["address", "payment", "card"]
+HANDOFF_WORDS = ["payment", "card"]
+MAX_TOOL_ROUNDS = 3
 
 
 class SupportChatbot:
-    """A support chatbot. Rules handle what must be right. A model handles the rest."""
+    """A support chatbot. The model decides. The toolbox checks every tool request."""
 
-    def __init__(self, name, instructions, order_tool, stock_tool, model):
+    def __init__(self, name, instructions, tools, model):
         """Set up one chatbot with its own name, instructions, tools, model, and history."""
         self.name = name
         self.instructions = instructions
-        self.order_tool = order_tool
-        self.stock_tool = stock_tool
+        self.tools = tools
         self.model = model
         self.history = []
 
@@ -23,31 +23,11 @@ class SupportChatbot:
         self.history.append({"role": "assistant", "content": reply})
         return reply
 
-    def count_user_messages(self):
-        """Return how many messages in the history came from the user."""
-        count = 0
-        for message in self.history:
-            if message["role"] == "user":
-                count += 1
-        return count
-
     def choose_reply(self, user_message):
-        """Use a rule when one applies. Otherwise ask the model."""
-        text = user_message.lower()
-        if self.needs_human(text):
+        """Pass payment questions to a person. Send everything else to the model."""
+        if self.needs_human(user_message.lower()):
             return "I can't help with that here. I'm passing you to a human agent."
-        if "stock" in text:
-            return self.stock_reply(user_message)
-        if "order" in text:
-            return self.order_reply(user_message)
         return self.model_reply()
-
-    def model_reply(self):
-        """Ask the model for a reply. Give a safe answer if the model has none."""
-        reply = self.model.reply(self.instructions, self.history)
-        if reply is None:
-            return "Sorry, I can't answer that right now. Please try again in a moment."
-        return reply
 
     def needs_human(self, text):
         """Return True if the message is about something a person must handle."""
@@ -56,18 +36,34 @@ class SupportChatbot:
                 return True
         return False
 
-    def order_reply(self, user_message):
-        """Use the order tool to answer a question about an order."""
-        order_id = self.order_tool.find_order_id(user_message)
-        if order_id is None:
-            return "Which order? Please send an order ID like A100."
-        status = self.order_tool.find_status(order_id)
-        return f"Order {order_id} is {status}."
+    def model_reply(self):
+        """Ask the model. Run each tool it asks for, then ask again, up to a limit."""
+        rounds = 0
+        while rounds < MAX_TOOL_ROUNDS:
+            tool_list = self.tools.tool_list()
+            decision = self.model.decide(self.instructions, self.history, tool_list)
+            if decision is None:
+                return "Sorry, I can't answer that right now. Please try again in a moment."
+            if "text" in decision:
+                return decision["text"]
+            name = decision["tool"]
+            arguments = decision["arguments"]
+            result = self.tools.run(name, arguments, self.history)
+            self.history.append(
+                {
+                    "role": "tool",
+                    "tool_name": name,
+                    "arguments": arguments,
+                    "content": result,
+                }
+            )
+            rounds += 1
+        return "Sorry, I couldn't finish that. I'm passing you to a human agent."
 
-    def stock_reply(self, user_message):
-        """Use the stock tool to answer a question about stock."""
-        product = self.stock_tool.find_product(user_message)
-        if product is None:
-            return "Which product? Please name the item you want me to check."
-        count = self.stock_tool.count_for(product)
-        return f"We have {count} of the {product} in stock."
+    def count_user_messages(self):
+        """Return how many messages the user has sent so far."""
+        count = 0
+        for message in self.history:
+            if message["role"] == "user":
+                count += 1
+        return count

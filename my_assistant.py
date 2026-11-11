@@ -2,16 +2,17 @@
 # Author: Pamela Emmrich
 
 HANDOFF_WORDS = ["refund", "payment", "cancel"]
+MAX_TOOL_ROUNDS = 3
 
 
 class BakeryAssistant:
-    """A bakery assistant. Rules handle what must be right. A model handles the rest."""
+    """A bakery assistant. The model decides. The toolbox checks every tool request."""
 
-    def __init__(self, name, instructions, tool, model):
-        """Set up one assistant with its own name, instructions, tool, model, and history."""
+    def __init__(self, name, instructions, tools, model):
+        """Set up one assistant with its own name, instructions, tools, model, and history."""
         self.name = name
         self.instructions = instructions
-        self.tool = tool
+        self.tools = tools
         self.model = model
         self.history = []
 
@@ -23,20 +24,10 @@ class BakeryAssistant:
         return reply
 
     def choose_reply(self, user_message):
-        """Use a rule when one applies. Otherwise ask the model."""
-        text = user_message.lower()
-        if self.needs_human(text):
+        """Pass money matters to a person. Send everything else to the model."""
+        if self.needs_human(user_message.lower()):
             return "I can't handle money matters here. I'm passing you to a baker."
-        if "order" in text:
-            return self.order_reply(user_message)
         return self.model_reply()
-
-    def model_reply(self):
-        """Ask the model for a reply. Give a safe answer if the model has none."""
-        reply = self.model.reply(self.instructions, self.history)
-        if reply is None:
-            return "Sorry, I can't answer that right now. Please try again in a moment."
-        return reply
 
     def needs_human(self, text):
         """Return True if the message is about something a person must handle."""
@@ -45,10 +36,26 @@ class BakeryAssistant:
                 return True
         return False
 
-    def order_reply(self, user_message):
-        """Use the tool to answer a question about an order."""
-        order_id = self.tool.find_order_id(user_message)
-        if order_id is None:
-            return "Which order? Please send an order ID like B100."
-        status = self.tool.find_status(order_id)
-        return f"Order {order_id} is {status}."
+    def model_reply(self):
+        """Ask the model. Run each tool it asks for, then ask again, up to a limit."""
+        rounds = 0
+        while rounds < MAX_TOOL_ROUNDS:
+            tool_list = self.tools.tool_list()
+            decision = self.model.decide(self.instructions, self.history, tool_list)
+            if decision is None:
+                return "Sorry, I can't answer that right now. Please try again in a moment."
+            if "text" in decision:
+                return decision["text"]
+            name = decision["tool"]
+            arguments = decision["arguments"]
+            result = self.tools.run(name, arguments, self.history)
+            self.history.append(
+                {
+                    "role": "tool",
+                    "tool_name": name,
+                    "arguments": arguments,
+                    "content": result,
+                }
+            )
+            rounds += 1
+        return "Sorry, I couldn't finish that. I'm passing you to a baker."
